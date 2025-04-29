@@ -27,7 +27,7 @@ jobs:
             git pull origin "$BRANCH"
 
             # 计算端口
-            if [ "$BRANCH" = "master" ]; then
+            if [ "$BRANCH" = "main" ]; then
               GROUP_NUMBER=0
             else
               GROUP_NUMBER=$(echo "$BRANCH" | sed 's/group//')
