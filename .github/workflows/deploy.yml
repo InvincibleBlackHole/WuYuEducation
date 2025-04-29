@@ -18,69 +18,55 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
           script: |
-            set -eo pipefail
+            set -eo pipefail  # 严格错误处理模式
             BRANCH="${{ github.ref_name }}"
             REPO_DIR="/www/cicd_wuyu/wuyuProject/WuYuEducation"
-            
-            # ======================
-            # 定义资源清理函数
-            # ======================
-            cleanup_docker_resources() {
-              local container_name="$1"
-              local image_name="$2"
-              
-              # 清理容器
-              if docker ps -a --format '{{.Names}}' | grep -qw "^${container_name}$"; then
-                echo "🛑 Stopping container: $container_name"
-                docker stop "$container_name" >/dev/null 2>&1 || true
-                echo "🗑️ Removing container: $container_name"
-                docker rm "$container_name" >/dev/null 2>&1 || true
-              else
-                echo "ℹ️  Container $container_name not found"
-              fi
-              
-              # 清理镜像
-              if docker image inspect "$image_name" &>/dev/null; then
-                echo "🧹 Removing image: $image_name"
-                docker rmi "$image_name" >/dev/null 2>&1 || true
-              else
-                echo "ℹ️  Image $image_name not found"
-              fi
-            }
 
             # ======================
-            # 主流程
+            # 初始化阶段
             # ======================
+            echo "🚦 Starting deployment for branch: $BRANCH"
             cd "$REPO_DIR" || exit 1
+
+            # ======================
+            # 代码更新阶段
+            # ======================
+            echo "🔄 Syncing code..."
             git checkout -f "$BRANCH"
             git pull origin "$BRANCH"
 
+            # ======================
+            # 环境计算阶段
+            # ======================
             if [ "$BRANCH" = "main" ]; then
               GROUP_NUMBER=0
             else
               GROUP_NUMBER=$(echo "$BRANCH" | sed 's/group//')
             fi
+            
             SERVER_PORT=$((9080 + GROUP_NUMBER))
             FRONTEND_PORT=$((9180 + GROUP_NUMBER))
             SERVER_IMAGE="wuyu-server-$BRANCH"
             FRONTEND_IMAGE="wuyu-front-$BRANCH"
 
             # ======================
-            # 后端处理
+            # 后端处理阶段
             # ======================
-            echo "🔨 Processing Backend..."
+            echo "🔨 Backend Build Phase"
             cd wuyu-server || exit 1
-            
-            # 清理旧资源
-            cleanup_docker_resources "$SERVER_IMAGE" "$SERVER_IMAGE"
-            
-            # 构建镜像
+            echo "1. Building Docker image..."
             docker build -t "$SERVER_IMAGE" . || {
               echo "❌ Backend build failed!"
               exit 1
             }
+
+            echo "2. Stopping old container..."
+            docker stop "$SERVER_IMAGE" >/dev/null 2>&1 || true
             
-            # 启动容器
+            echo "3. Removing old container..."
+            docker rm "$SERVER_IMAGE" >/dev/null 2>&1 || true
+
+            echo "🚀 Backend Deployment Phase"
             docker run -d \
               --name "$SERVER_IMAGE" \
               -p "$SERVER_PORT:8080" \
@@ -90,21 +76,23 @@ jobs:
             }
 
             # ======================
-            # 前端处理
+            # 前端处理阶段
             # ======================
-            echo "🔨 Processing Frontend..."
+            echo "🔨 Frontend Build Phase"
             cd ../wuyu-front || exit 1
-            
-            # 清理旧资源
-            cleanup_docker_resources "$FRONTEND_IMAGE" "$FRONTEND_IMAGE"
-            
-            # 构建镜像
+            echo "1. Building Docker image..."
             docker build -t "$FRONTEND_IMAGE" . || {
               echo "❌ Frontend build failed!"
               exit 1
             }
+
+            echo "2. Stopping old container..."
+            docker stop "$FRONTEND_IMAGE" >/dev/null 2>&1 || true
             
-            # 启动容器
+            echo "3. Removing old container..."
+            docker rm "$FRONTEND_IMAGE" >/dev/null 2>&1 || true
+
+            echo "🚀 Frontend Deployment Phase"
             docker run -d \
               --name "$FRONTEND_IMAGE" \
               -p "$FRONTEND_PORT:80" \
@@ -114,8 +102,15 @@ jobs:
             }
 
             # ======================
-            # 最终状态报告
+            # 完成阶段
             # ======================
-            echo -e "\n🏁 Deployment Completed"
-            echo "-------------------------------------"
-            docker ps --filter "name=wuyu" --format "table {{.Names}}\t{{.Ports}}"
+            echo -e "\n✅ Deployment Summary"
+            echo "--------------------------------"
+            echo "| Service  | Port   | Status  |"
+            echo "|----------|--------|---------|"
+            echo "| Backend  | $SERVER_PORT  | Running |"
+            echo "| Frontend | $FRONTEND_PORT  | Running |"
+            echo "--------------------------------"
+            echo "🔗 Access URLs:"
+            echo " - Backend API: http://${{ secrets.SERVER_HOST }}:$SERVER_PORT"
+            echo " - Frontend App: http://${{ secrets.SERVER_HOST }}:$FRONTEND_PORT"
