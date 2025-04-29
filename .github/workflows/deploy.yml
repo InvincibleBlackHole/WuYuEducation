@@ -8,31 +8,53 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      # 步骤1：检出代码
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # 步骤2：通过SSH执行部署操作
-      - name: Execute Deployment Scripts
+      - name: Remote Deployment
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
           script: |
-            set -e  # 任何命令失败立即终止脚本
-            
-            # 初始化变量
+            set -eo pipefail
             BRANCH="${{ github.ref_name }}"
             REPO_DIR="/www/cicd_wuyu/wuyuProject/WuYuEducation"
-            cd "$REPO_DIR"
+            
+            # ======================
+            # 定义资源清理函数
+            # ======================
+            cleanup_docker_resources() {
+              local container_name="$1"
+              local image_name="$2"
+              
+              # 清理容器
+              if docker ps -a --format '{{.Names}}' | grep -qw "^${container_name}$"; then
+                echo "🛑 Stopping container: $container_name"
+                docker stop "$container_name" >/dev/null 2>&1 || true
+                echo "🗑️ Removing container: $container_name"
+                docker rm "$container_name" >/dev/null 2>&1 || true
+              else
+                echo "ℹ️  Container $container_name not found"
+              fi
+              
+              # 清理镜像
+              if docker image inspect "$image_name" &>/dev/null; then
+                echo "🧹 Removing image: $image_name"
+                docker rmi "$image_name" >/dev/null 2>&1 || true
+              else
+                echo "ℹ️  Image $image_name not found"
+              fi
+            }
 
-            # ========== 代码同步阶段 ==========
-            echo "🔄 Syncing $BRANCH branch..."
-            git checkout -f $BRANCH
-            git pull origin $BRANCH
+            # ======================
+            # 主流程
+            # ======================
+            cd "$REPO_DIR" || exit 1
+            git checkout -f "$BRANCH"
+            git pull origin "$BRANCH"
 
-            # ========== 端口计算阶段 ==========
             if [ "$BRANCH" = "main" ]; then
               GROUP_NUMBER=0
             else
@@ -43,33 +65,57 @@ jobs:
             SERVER_IMAGE="wuyu-server-$BRANCH"
             FRONTEND_IMAGE="wuyu-front-$BRANCH"
 
-            # ========== 后端处理阶段 ==========
-            echo "🏗️ Building Backend..."
-            cd wuyu-server
-            docker build -t $SERVER_IMAGE . || { echo "❌ Backend build failed"; exit 1; }
-
-            echo "🚀 Deploying Backend..."
-            docker stop $SERVER_IMAGE >/dev/null 2>&1 || true
-            docker rm $SERVER_IMAGE >/dev/null 2>&1 || true
+            # ======================
+            # 后端处理
+            # ======================
+            echo "🔨 Processing Backend..."
+            cd wuyu-server || exit 1
+            
+            # 清理旧资源
+            cleanup_docker_resources "$SERVER_IMAGE" "$SERVER_IMAGE"
+            
+            # 构建镜像
+            docker build -t "$SERVER_IMAGE" . || {
+              echo "❌ Backend build failed!"
+              exit 1
+            }
+            
+            # 启动容器
             docker run -d \
-              --name $SERVER_IMAGE \
-              -p $SERVER_PORT:8080 \
-              $SERVER_IMAGE || { echo "❌ Backend deployment failed"; exit 1; }
+              --name "$SERVER_IMAGE" \
+              -p "$SERVER_PORT:8080" \
+              "$SERVER_IMAGE" || {
+              echo "❌ Backend deployment failed!"
+              exit 1
+            }
 
-            # ========== 前端处理阶段 ========== 
-            echo "🏗️ Building Frontend..."
-            cd ../wuyu-front
-            docker build -t $FRONTEND_IMAGE . || { echo "❌ Frontend build failed"; exit 1; }
-
-            echo "🚀 Deploying Frontend..."
-            docker stop $FRONTEND_IMAGE >/dev/null 2>&1 || true
-            docker rm $FRONTEND_IMAGE >/dev/null 2>&1 || true
+            # ======================
+            # 前端处理
+            # ======================
+            echo "🔨 Processing Frontend..."
+            cd ../wuyu-front || exit 1
+            
+            # 清理旧资源
+            cleanup_docker_resources "$FRONTEND_IMAGE" "$FRONTEND_IMAGE"
+            
+            # 构建镜像
+            docker build -t "$FRONTEND_IMAGE" . || {
+              echo "❌ Frontend build failed!"
+              exit 1
+            }
+            
+            # 启动容器
             docker run -d \
-              --name $FRONTEND_IMAGE \
-              -p $FRONTEND_PORT:80 \
-              $FRONTEND_IMAGE || { echo "❌ Frontend deployment failed"; exit 1; }
+              --name "$FRONTEND_IMAGE" \
+              -p "$FRONTEND_PORT:80" \
+              "$FRONTEND_IMAGE" || {
+              echo "❌ Frontend deployment failed!"
+              exit 1
+            }
 
-            # ========== 完成阶段 ==========
-            echo "✅ Deployment completed for $BRANCH"
-            echo "Backend: $SERVER_IMAGE @ port $SERVER_PORT"
-            echo "Frontend: $FRONTEND_IMAGE @ port $FRONTEND_PORT"
+            # ======================
+            # 最终状态报告
+            # ======================
+            echo -e "\n🏁 Deployment Completed"
+            echo "-------------------------------------"
+            docker ps --filter "name=wuyu" --format "table {{.Names}}\t{{.Ports}}"
